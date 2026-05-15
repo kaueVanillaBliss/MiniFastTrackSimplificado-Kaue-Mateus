@@ -8,29 +8,27 @@ class Peer:
     def __init__(self, host, port, shared_dir):
         self.host = host
         self.port = port
-        # O ID do peer será o seu IP:Porta
         self.id = f"{host}:{port}" 
         self.shared_dir = shared_dir
-        self.peer_list = {} # Dicionário para guardar quem está online: {id: [ip, porta]}
+        self.peer_list = {} 
         self.is_discovery = False
 
-        # Cria a pasta de compartilhamento na máquina local se ela não existir
+        # Cria a pasta de compartilhamento local se não existir
         if not os.path.exists(self.shared_dir):
             os.makedirs(self.shared_dir)
 
-        # Configura o socket TCP (Servidor embutido)
+        # Configura o socket TCP do servidor embutido
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((self.host, self.port))
 
     def start_listening(self):
-        """Fica escutando novas conexões em background"""
+        """Escuta conexões em background"""
         self.server_socket.listen()
         print(f"\n[+] Peer inciado! ID: {self.id}")
         print(f"[+] Escutando na porta {self.port}...")
 
         while True:
             conn, addr = self.server_socket.accept()
-            # Para cada nova conexão, abrimos uma thread para não travar o peer principal
             thread = threading.Thread(target=self.handle_client, args=(conn, addr))
             thread.start()
 
@@ -50,13 +48,12 @@ class Peer:
         return None
 
     def handle_client(self, conn, addr):
-        """Lida com as requisições que chegam de outros peers"""
+        """Roteador de requisições: Registro, Listagem e Download"""
         mensagem = self.receber_mensagem(conn)
         
         if mensagem:
             acao = mensagem.get("acao")
 
-            # Ação 1: Alguém quer entrar na rede
             if acao == "REGISTRAR":
                 novo_id = mensagem.get("id")
                 ip = mensagem.get("ip")
@@ -71,7 +68,6 @@ class Peer:
                 }
                 self.enviar_mensagem(conn, resposta)
 
-            # Ação 2: Alguém quer ver meus arquivos
             elif acao == "LISTAR_ARQUIVOS":
                 arquivos = self.get_local_files()
                 resposta = {
@@ -80,13 +76,12 @@ class Peer:
                 }
                 self.enviar_mensagem(conn, resposta)
 
-            # Ação 3: Alguém quer fazer download de um arquivo meu
             elif acao == "BAIXAR_ARQUIVO":
                 nome_arquivo = mensagem.get("nome_arquivo")
                 caminho_arquivo = os.path.join(self.shared_dir, nome_arquivo)
                 
                 if os.path.exists(caminho_arquivo):
-                    # Calcula o Hash SHA-256 do arquivo para garantir a integridade
+                    # Calcula Hash SHA-256 antes de enviar
                     sha256_hash = hashlib.sha256()
                     with open(caminho_arquivo, "rb") as f:
                         for byte_block in iter(lambda: f.read(4096), b""):
@@ -94,7 +89,6 @@ class Peer:
                     hash_arquivo = sha256_hash.hexdigest()
                     tamanho = os.path.getsize(caminho_arquivo)
                     
-                    # Envia metadados do arquivo primeiro
                     resposta = {
                         "acao": "INICIAR_DOWNLOAD",
                         "tamanho": tamanho,
@@ -102,7 +96,6 @@ class Peer:
                     }
                     self.enviar_mensagem(conn, resposta)
                     
-                    # Aguarda confirmação do cliente antes de mandar os bytes
                     confirmacao = self.receber_mensagem(conn)
                     if confirmacao and confirmacao.get("acao") == "PRONTO_PARA_RECEBER":
                         with open(caminho_arquivo, "rb") as f:
@@ -115,11 +108,11 @@ class Peer:
         conn.close()
 
     def get_local_files(self):
-        """Lista os arquivos da pasta compartilhada"""
+        """Retorna a lista de arquivos da pasta local"""
         return os.listdir(self.shared_dir)
 
     def solicitar_arquivos(self, id_alvo):
-        """Pede a lista de arquivos para um peer específico"""
+        """Pede a lista de arquivos de um peer remoto"""
         if id_alvo not in self.peer_list:
             print(f"[!] Peer {id_alvo} não encontrado na sua lista.")
             return
@@ -151,7 +144,7 @@ class Peer:
                 del self.peer_list[id_alvo]
 
     def baixar_arquivo(self, id_alvo, nome_arquivo):
-        """Realiza o download P2P de um arquivo e verifica a integridade via Hash"""
+        """Faz o download P2P validando a integridade com Hash"""
         if id_alvo not in self.peer_list:
             print(f"[!] Peer {id_alvo} não encontrado.")
             return
@@ -187,7 +180,7 @@ class Peer:
                         sha256_hash.update(chunk)
                         bytes_recebidos += len(chunk)
                 
-                # Verificação de integridade
+                # Validação de integridade
                 hash_calculado = sha256_hash.hexdigest()
                 if hash_calculado == hash_esperado:
                     print(f"[+] Download concluído com sucesso! (Integridade validada: {hash_calculado[:8]}...)")
@@ -203,65 +196,67 @@ class Peer:
         except Exception as e:
             print(f"[!] Erro crítico durante o download: {e}")
 
-    def entrar_na_rede(self, discovery_host, discovery_port):
-        """Tenta encontrar o Ponto de Descoberta. Se não achar, assume o papel."""
-        if self.host == discovery_host and self.port == discovery_port:
-            print("[*] Iniciando como Ponto de Descoberta primário.")
-            self.is_discovery = True
-            return
-
-        print(f"[*] Buscando Ponto de Descoberta em {discovery_host}:{discovery_port}...")
+    def entrar_na_rede(self, discovery_host, porta_inicial, porta_final):
+        """Faz uma varredura nas portas para achar uma rede ativa. Se não achar, vira líder."""
+        print(f"[*] Buscando rede ativa entre as portas {porta_inicial} e {porta_final}...")
         
-        try:
-            temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            temp_sock.connect((discovery_host, discovery_port))
-            
-            msg_registro = {
-                "acao": "REGISTRAR",
-                "id": self.id,
-                "ip": self.host,
-                "porta": self.port
-            }
-            self.enviar_mensagem(temp_sock, msg_registro)
-            
-            resposta = self.receber_mensagem(temp_sock)
-            if resposta and resposta.get("acao") == "LISTA_ATUALIZADA":
-                self.peer_list = resposta.get("peers", {})
-                print(f"[+] Conectado à rede com sucesso!")
-            
-            temp_sock.close()
+        for porta_tentativa in range(porta_inicial, porta_final + 1):
+            if self.host == discovery_host and self.port == porta_tentativa:
+                continue
+                
+            try:
+                temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                temp_sock.settimeout(1) # Timeout curto para a varredura ser rápida
+                temp_sock.connect((discovery_host, porta_tentativa))
+                
+                msg_registro = {
+                    "acao": "REGISTRAR",
+                    "id": self.id,
+                    "ip": self.host,
+                    "porta": self.port
+                }
+                self.enviar_mensagem(temp_sock, msg_registro)
+                
+                resposta = self.receber_mensagem(temp_sock)
+                if resposta and resposta.get("acao") == "LISTA_ATUALIZADA":
+                    self.peer_list = resposta.get("peers", {})
+                    print(f"[+] Sucesso! Conectado à rede através do peer {discovery_host}:{porta_tentativa}")
+                    temp_sock.close()
+                    return
 
-        except ConnectionRefusedError:
-            print("[!] Ponto de Descoberta não encontrado ou offline.")
-            print("[*] Assumindo o papel de Ponto de Descoberta (Líder) da rede.")
-            self.is_discovery = True
+            except (ConnectionRefusedError, socket.timeout):
+                pass
+
+        print("[!] Nenhuma rede ativa encontrada nas portas especificadas.")
+        print("[*] Assumindo o papel de Ponto de Descoberta (Líder) da rede.")
+        self.is_discovery = True
 
 
 # ==========================================
 # BLOCO PRINCIPAL (EXECUÇÃO E MENU)
 # ==========================================
 if __name__ == "__main__":
-    # Pede a porta para permitir testes locais com vários peers no mesmo PC
     porta_input = input("Digite a porta para iniciar este peer (ex: 5000, 5001): ")
     PORTA = int(porta_input)
     IP_LOCAL = '127.0.0.1'
     PASTA_LOCAL = f'./arquivos_peer_{PORTA}'
 
-    # O IP e Porta base que todo mundo tenta acessar primeiro para se descobrir
+    # Configuração da Varredura (Port Scanning)
     IP_DESCOBERTA = '127.0.0.1'
-    PORTA_DESCOBERTA = 5000
+    PORTA_INICIAL = 5000
+    PORTA_FINAL = 5010
 
     meu_peer = Peer(IP_LOCAL, PORTA, PASTA_LOCAL)
 
-    # Inicia o servidor em background
+    # Inicia a thread ouvinte em background
     listener_thread = threading.Thread(target=meu_peer.start_listening)
     listener_thread.daemon = True
     listener_thread.start()
 
-    # Tenta se registrar na rede
-    meu_peer.entrar_na_rede(IP_DESCOBERTA, PORTA_DESCOBERTA)
+    # Tenta entrar na rede usando a varredura
+    meu_peer.entrar_na_rede(IP_DESCOBERTA, PORTA_INICIAL, PORTA_FINAL)
 
-    # Interface interativa do terminal
+    # Menu principal
     try:
         while True:
             print("\n" + "="*35)
