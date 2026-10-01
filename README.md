@@ -1,4 +1,4 @@
-# Sistema de Compartilhamento de Arquivos P2P (Peer-to-Peer)
+# Sistema de Compartilhamento de Arquivos P2P (Peer-to-Peer) [Trabalho da Disciplina de Sistemas Distribuidos]
 
 Este projeto implementa um sistema de compartilhamento de arquivos descentralizado (P2P) totalmente desenvolvido em Python, utilizando sockets TCP e a biblioteca standard. O sistema permite que múltiplos nós (peers) se conectem entre si, descubram a rede automaticamente e transfiram arquivos com verificação rigorosa de integridade.
 
